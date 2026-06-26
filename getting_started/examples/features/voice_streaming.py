@@ -9,6 +9,7 @@ Performance comparison (streaming vs non-streaming):
 - Result: ~40-50% faster time-to-first-audio with streaming
 """
 
+import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -16,6 +17,7 @@ from agents import Agent, Runner, set_tracing_disabled
 from dotenv import load_dotenv
 
 from tac import TAC, TACConfig
+from tac.adapters.prompt_builder import MemoryPromptBuilder
 from tac.channels.voice import VoiceChannel
 from tac.models.session import ConversationSession
 from tac.models.tac import TACMemoryResponse
@@ -25,7 +27,7 @@ load_dotenv()
 set_tracing_disabled(True)
 
 tac = TAC(config=TACConfig.from_env())
-voice_channel = VoiceChannel(tac)
+voice_channel = VoiceChannel(tac, config={"memory_mode": "always"})
 
 SYSTEM_INSTRUCTIONS = (
     "You are a voice assistant speaking with a user over the phone. "
@@ -33,8 +35,6 @@ SYSTEM_INSTRUCTIONS = (
     "Do not use markdown, asterisks, bullets, or emojis; your words will be "
     "spoken aloud."
 )
-
-agent = Agent(name="Voice Assistant", instructions=SYSTEM_INSTRUCTIONS)
 
 conversation_history: dict[str, list[Any]] = {}
 
@@ -48,6 +48,9 @@ async def handle_message_ready(
     so tokens are sent to the caller as they arrive from the LLM.
     """
     conv_id = context.conversation_id
+
+    instructions = MemoryPromptBuilder.compose(SYSTEM_INSTRUCTIONS, memory_response, context)
+    agent = Agent(name="Voice Assistant", instructions=instructions)
 
     history = conversation_history.get(conv_id, [])
     agent_input = history + [{"role": "user", "content": user_message}]
@@ -65,5 +68,11 @@ async def handle_message_ready(
 tac.on_message_ready(handle_message_ready)
 
 if __name__ == "__main__":
-    server = TACFastAPIServer(tac=tac, voice_channel=voice_channel)
+    from tac.server.config import TACServerConfig
+
+    server_config = TACServerConfig.from_env()
+    if os.environ.get("CONVERSATION_INTELLIGENCE_CONFIGURATION_ID"):
+        server_config.cintel_webhook_path = "/ci-webhook"
+
+    server = TACFastAPIServer(tac=tac, voice_channel=voice_channel, config=server_config)
     server.start()

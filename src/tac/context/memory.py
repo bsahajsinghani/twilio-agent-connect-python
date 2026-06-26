@@ -310,14 +310,13 @@ class MemoryClient(BaseAPIClient):
         endpoint = f"/v1/Stores/{self.store_id}/Profiles/{profile_id}/Observations"
         url = f"{self.base_url}{endpoint}"
 
-        payload: dict[str, Any] = {
-            "content": content,
-            "source": source,
-        }
+        observation: dict[str, Any] = {"content": content, "source": source}
         if conversation_ids:
-            payload["conversationIds"] = conversation_ids
+            observation["conversationIds"] = conversation_ids
         if occurred_at:
-            payload["occurredAt"] = occurred_at
+            observation["occurredAt"] = occurred_at
+
+        payload: dict[str, Any] = {"observations": [observation]}
 
         try:
             async with self._get_client() as client:

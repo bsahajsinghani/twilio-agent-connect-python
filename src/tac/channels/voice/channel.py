@@ -715,10 +715,9 @@ class VoiceChannel(BaseChannel):
         """
         Clean up WebSocket and session resources when connection closes.
 
-        In orchestrated mode, the conversation remains tracked in
-        self._conversations until the CONVERSATION_UPDATED/CLOSED webhook
-        arrives from Conversation Orchestrator. In relay-only mode there is no such webhook,
-        so we also end the conversation here.
+        In orchestrated mode, immediately closes the conversation via the CO API
+        so Memora's extraction pipeline starts without waiting for the inactive timeout.
+        In relay-only mode there is no CO webhook, so we end the conversation locally.
 
         Args:
             conv_id: Conversation ID
@@ -734,7 +733,23 @@ class VoiceChannel(BaseChannel):
             await session_state.cancel_stream_task()
             self.session_manager.remove_session(conv_id)
 
-        if not self.tac.is_orchestrator_enabled() and conv_id in self._conversations:
+        if self.tac.is_orchestrator_enabled():
+            # Close conversation immediately so Memora extraction starts right away
+            # instead of waiting for the inactive timeout.
+            co_client = self.tac.conversation_orchestrator_client
+            if co_client is not None and conv_id in self._conversations:
+                try:
+                    await co_client.update_conversation(conv_id, status="CLOSED")
+                    self.logger.debug(
+                        "Closed conversation on call end", conversation_id=conv_id
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        "Failed to close conversation on call end",
+                        conversation_id=conv_id,
+                        error=str(e),
+                    )
+        elif conv_id in self._conversations:
             await self._end_conversation(conv_id)
 
         self.logger.debug(

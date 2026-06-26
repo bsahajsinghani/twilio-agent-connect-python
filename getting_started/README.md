@@ -126,11 +126,65 @@ See `examples/.env.example` for all available configuration options. Key variabl
 ### Optional (OpenAI Example)
 - `OPENAI_API_KEY`: Your OpenAI API key (only needed to run OpenAI examples)
 
+### Optional (Conversation Intelligence)
+- `CONVERSATION_INTELLIGENCE_CONFIGURATION_ID`: CI Configuration ID — enables the `/ci-webhook` route on the TAC server to receive operator results
+- `CONVERSATION_INTELLIGENCE_OBSERVATION_OPERATOR_SID`: Operator SID for a custom observation extraction operator
+- `CONVERSATION_INTELLIGENCE_SUMMARY_OPERATOR_SID`: Operator SID for a custom summary operator
+
 ### Optional (Channel-Specific)
 - `TWILIO_STUDIO_HANDOFF_FLOW_SID`: Studio Flow SID used by `create_studio_handoff_tool` (required for `features/handoff.py`)
 - `TWILIO_RCS_SENDER_ID`: RCS Sender ID (required for `features/rcs.py`)
 - `TWILIO_WHATSAPP_NUMBER`: WhatsApp-enabled phone number in format `whatsapp:+1234567890` (required for `features/whatsapp.py`)
 - `TWILIO_CONVERSATIONS_SERVICE_SID`: Conversations Service SID (required for Chat channel examples)
+
+## Conversation Intelligence and Memory
+
+### How memory gets written (the standard path)
+
+TAC does **not** write observations or summaries into Conversation Memory directly. Instead, Memora (Twilio's memory service) creates an internal Conversation Intelligence configuration automatically when you set up a Conversation Configuration. After a call ends and the session goes INACTIVE (typically ~5 minutes), Memora's ingest pipeline fires, processes the transcript, and writes observations and summaries into the Memory Store. These are then available via Recall on the next call.
+
+This means there is typically a **5–10 minute delay** between a call ending and the memories being available.
+
+### Custom Conversation Intelligence operators
+
+You can create your own CI operators (e.g. "extract product preferences", "detect customer sentiment") with custom prompts via the Twilio Console. However, **results from custom operators do not automatically flow into Memora's ingest pipeline** — only Memora's own internal operators do.
+
+TAC provides an alternate path for custom operators: if you set `CONVERSATION_INTELLIGENCE_CONFIGURATION_ID` in your `.env`, the TAC server exposes a `/ci-webhook` route. Twilio will POST custom operator results to this endpoint, and TAC will actively write them into Conversation Memory via `create_observation()`. This enables near real-time observation ingestion for custom operators, bypassing the standard delay.
+
+To enable this in your voice example:
+
+```python
+if __name__ == "__main__":
+    from tac.server.config import TACServerConfig
+
+    server_config = TACServerConfig.from_env()
+    if os.environ.get("CONVERSATION_INTELLIGENCE_CONFIGURATION_ID"):
+        server_config.cintel_webhook_path = "/ci-webhook"
+
+    server = TACFastAPIServer(tac=tac, voice_channel=voice_channel, config=server_config)
+    server.start()
+```
+
+Then configure the webhook URL in the Twilio Console under your CI configuration to point to `https://<your-domain>/ci-webhook`.
+
+> **Note:** This is an alternate path intended for custom operator use cases. For standard memory (observations and summaries from calls), Memora's ingest pipeline handles everything automatically — you do not need to configure CI webhooks.
+
+### Reducing memory availability latency
+
+By default, the Twilio Console sets the VOICE inactive timeout to a minimum of 5 minutes — but this is a UI constraint only. The underlying API allows values as low as 1 minute:
+
+```bash
+curl -X PUT "https://conversations.twilio.com/v2/ControlPlane/Configurations/<your-config-id>" \
+  -u "<api-key>:<api-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"channelSettings": {"VOICE": {"statusTimeouts": {"inactive": 1, "closed": 5}}}}'
+```
+
+See the [Conversation Configuration API](http://twilio.com/docs/api/conversations/v2/configuration/update-configuration) for full details.
+
+Even better: TAC automatically closes the conversation via the CO API as soon as the call ends (WebSocket disconnect), bypassing the inactive timer entirely and triggering Memora extraction immediately. This is the fastest path to getting memories available for the next call.
+
+For background on how conversation state transitions (ACTIVE → INACTIVE → CLOSED) trigger memory extraction, see the [Conversation Lifecycle docs](https://www.twilio.com/docs/conversations/orchestrator/concepts/lifecycle). Key insight: observations are extracted on both INACTIVE and CLOSED, but summaries are only extracted on CLOSED — so closing immediately on call end is important for summaries.
 
 ## Next Steps
 
