@@ -242,6 +242,23 @@ class VoiceChannel(BaseChannel):
         profile_lookup_address = customer_address or self._caller_address(setup_msg)
         profile_id = customer_participant.profile_id if customer_participant else None
 
+        # Resolve the agent participant so ai_agent_info is populated on the
+        # session, matching the messaging channels. The agent is the participant
+        # that owns TAC's address (the configured phone number) on the VOICE
+        # channel and has an agent type. A HUMAN_AGENT added by a
+        # redirected/escalated call is NOT TAC and is not adopted here.
+        agent_participant = self._find_agent_participant(
+            participants, "VOICE", self.tac.config.phone_number
+        )
+        agent_address = (
+            next(
+                (a.address for a in agent_participant.addresses if a.channel == "VOICE"),
+                None,
+            )
+            if agent_participant and agent_participant.addresses
+            else None
+        )
+
         self._websocket_manager.add_websocket(conv_id, websocket)
         session = self._start_conversation(conv_id, profile_id)
 
@@ -251,6 +268,15 @@ class VoiceChannel(BaseChannel):
 
         if profile_lookup_address:
             session.author_info = AuthorInfo(address=profile_lookup_address)
+
+        if agent_participant:
+            # Fall back to the configured phone number we matched on — the
+            # participant owns it by definition, so it's a meaningful address
+            # even in the unlikely case it carries no explicit VOICE address.
+            session.ai_agent_info = AuthorInfo(
+                address=agent_address or self.tac.config.phone_number,
+                participant_id=agent_participant.id,
+            )
 
         return conv_id, session_state
 
