@@ -16,8 +16,8 @@ from tac.channels.base import BaseChannel
 from tac.channels.websocket_protocol import WebSocketDisconnectError
 from tac.core.logging import get_logger
 from tac.core.tac import TAC
+from tac.models.voice import TwiMLRequest
 from tac.server.config import TACServerConfig
-from tac.tools.handoff import studio_voice_handoff_url
 
 if TYPE_CHECKING:
     from tac.channels.messaging import MessagingChannel
@@ -112,6 +112,9 @@ class TACFastAPIServer:
         self.voice_channel = voice_channel
         self.messaging_channels: list[MessagingChannel] = messaging_channels or []
 
+        if self.voice_channel is not None:
+            self._validate_voice_url_config()
+
         # Gather all channels that need webhook processing
         self.webhook_channels: list[BaseChannel] = []
         if self.voice_channel:
@@ -120,6 +123,27 @@ class TACFastAPIServer:
 
         self.app: FastAPI = app if app is not None else FastAPI(title="TAC Server")
         self._register_routes(self.app)
+
+    def _validate_voice_url_config(self) -> None:
+        """Fail fast at server construction if the voice channel can't build a
+        WebSocket URL.
+
+        Without this check, the misconfiguration would only surface on the
+        first inbound call as a 500 — an easy thing to miss in CI or smoke
+        tests that don't hit voice. Failing here means the server doesn't
+        start at all if the voice channel isn't wired up.
+
+        Custom adapters (Flask/Django/etc.) constructing ``VoiceChannel``
+        directly still get the runtime ``ValueError`` on first request — we
+        can't know what URL plumbing they're doing outside this server.
+        """
+        assert self.voice_channel is not None  # checked by caller
+        if self.tac.config.voice_public_domain:
+            return
+        raise ValueError(
+            "Voice channel is configured but TACConfig.voice_public_domain is "
+            "not set. Set it directly or via the TWILIO_VOICE_PUBLIC_DOMAIN env var."
+        )
 
     def _register_routes(self, app: FastAPI) -> None:
         """Register TAC routes (conversation webhook, voice, CI) onto the given FastAPI app."""
@@ -181,49 +205,31 @@ class TACFastAPIServer:
         if self.voice_channel is not None:
             vc = self.voice_channel
 
-            if not config.public_domain:
-                logger.warning(
-                    "public_domain is not set — voice URLs will be malformed. "
-                    "Set TWILIO_VOICE_PUBLIC_DOMAIN environment variable."
-                )
-
             @app.post(config.twiml_path, dependencies=[Depends(http_sig)])
-            async def post_twiml() -> Response:
+            async def post_twiml(request: Request) -> Response:
                 """Generate TwiML for incoming voice calls."""
-                websocket_url = f"wss://{config.public_domain}{config.websocket_path}"
-                if self.tac.config.studio_handoff_flow_sid:
-                    action_url = studio_voice_handoff_url(
-                        self.tac.config.account_sid,
-                        self.tac.config.studio_handoff_flow_sid,
-                    )
-                elif not self.tac.is_orchestrator_enabled():
-                    action_url = (
-                        f"https://{config.public_domain}{config.conversation_relay_callback_path}"
-                    )
-                else:
-                    action_url = None
+                form = await request.form()
+                form_dict = {k: v for k, v in form.items() if isinstance(v, str)}
+                twiml_request = TwiMLRequest.from_form(form_dict)
 
-                twiml = await vc.handle_incoming_call(
-                    options={
-                        "websocket_url": websocket_url,
-                        "action_url": action_url,
-                        "welcome_greeting": config.welcome_greeting,
-                    },
-                )
+                twiml = await vc.handle_incoming_call(twiml_request=twiml_request)
                 return Response(content=twiml, media_type="application/xml")
 
-            @app.websocket(config.websocket_path)
+            @app.websocket(self.tac.config.voice_websocket_path)
             async def websocket_endpoint(websocket: WebSocket, _: None = Depends(ws_sig)) -> None:
                 """Handle voice WebSocket connections."""
                 adapter = FastAPIWebSocketAdapter(websocket)
                 await vc.handle_websocket(adapter)
 
-            @app.post(config.conversation_relay_callback_path)
+            @app.post(
+                self.tac.config.voice_action_path,
+                dependencies=[Depends(http_sig)],
+            )
             async def conversation_relay_callback(request: Request) -> Response:
                 """Handle ConversationRelay action callback (call ended)."""
                 try:
                     form_data = await request.form()
-                    payload_dict = {k: str(v) for k, v in form_data.items()}
+                    payload_dict = {k: v for k, v in form_data.items() if isinstance(v, str)}
                     await vc.handle_conversation_relay_callback(payload_dict)
                 except Exception:
                     logger.error("Failed to process ConversationRelay callback", exc_info=True)
