@@ -110,6 +110,47 @@ def turn_span(call_sid: str, utterance: str) -> Iterator[Any]:
 
 
 @contextmanager
+def co_init_span(call_sid: str) -> Iterator[Any]:
+    """Child span wrapping the CO polling loop at call start.
+
+    This covers the time TAC spends waiting for Conversation Orchestrator to
+    create the conversation after ConversationRelay connects. Can be 200-800ms
+    depending on CO load.
+    """
+    from opentelemetry import context, trace
+
+    root_span = _call_spans.get(call_sid)
+    ctx = trace.set_span_in_context(root_span) if root_span is not None else context.get_current()
+    tracer = _get_tracer()
+    with tracer.start_as_current_span(
+        "call.co_init",
+        context=ctx,
+        attributes={"call.sid": call_sid},
+    ) as span:
+        yield span
+
+
+@contextmanager
+def profile_lookup_span(call_sid: str) -> Iterator[Any]:
+    """Child span wrapping the participant fetch + profile resolution.
+
+    Covers list_participants() + resolving the customer phone number to a
+    profile ID. Runs immediately after co_init.
+    """
+    from opentelemetry import context, trace
+
+    root_span = _call_spans.get(call_sid)
+    ctx = trace.set_span_in_context(root_span) if root_span is not None else context.get_current()
+    tracer = _get_tracer()
+    with tracer.start_as_current_span(
+        "call.profile_lookup",
+        context=ctx,
+        attributes={"call.sid": call_sid},
+    ) as span:
+        yield span
+
+
+@contextmanager
 def memory_span(call_sid: str) -> Iterator[Any]:
     """Child span wrapping the Memora Recall HTTP call."""
     tracer = _get_tracer()
@@ -129,6 +170,19 @@ def llm_span(call_sid: str) -> Iterator[Any]:
         attributes={"call.sid": call_sid},
     ) as span:
         yield span
+
+
+def record_first_token(call_sid: str) -> None:
+    """Add a 'first_token_sent' event to the currently active span.
+
+    Call this the moment the first streaming token is written to the WebSocket.
+    Shows as a point-in-time marker on the llm.completion span in Jaeger,
+    splitting it visually into 'waiting for LLM' vs 'streaming tokens out'.
+    """
+    from opentelemetry import trace
+
+    span = trace.get_current_span()
+    span.add_event("first_token_sent", {"call.sid": call_sid})
 
 
 def inject_traceparent(headers: dict[str, str]) -> dict[str, str]:

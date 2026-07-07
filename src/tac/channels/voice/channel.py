@@ -206,21 +206,22 @@ class VoiceChannel(BaseChannel):
             raise RuntimeError("_initialize_conversation called without Conversation Orchestrator")
 
         conversations: list[Any] = []
-        for attempt in range(_POLL_ATTEMPTS):
-            conversations = await conversation_orchestrator_client.list_conversations(
-                channel_id=call_sid,
-                status=["ACTIVE"],
-            )
-            if len(conversations) == 1:
-                break
-            if attempt < _POLL_ATTEMPTS - 1:
-                self.logger.debug(
-                    "Conversation not ready yet, polling again",
-                    call_sid=call_sid,
-                    attempt=attempt + 1,
-                    found=len(conversations),
+        with tracing.co_init_span(call_sid):
+            for attempt in range(_POLL_ATTEMPTS):
+                conversations = await conversation_orchestrator_client.list_conversations(
+                    channel_id=call_sid,
+                    status=["ACTIVE"],
                 )
-                await asyncio.sleep(_POLL_BASE_DELAY * (2**attempt))
+                if len(conversations) == 1:
+                    break
+                if attempt < _POLL_ATTEMPTS - 1:
+                    self.logger.debug(
+                        "Conversation not ready yet, polling again",
+                        call_sid=call_sid,
+                        attempt=attempt + 1,
+                        found=len(conversations),
+                    )
+                    await asyncio.sleep(_POLL_BASE_DELAY * (2**attempt))
 
         if len(conversations) != 1:
             raise RuntimeError(
@@ -233,20 +234,21 @@ class VoiceChannel(BaseChannel):
         conversation = conversations[0]
         conv_id = conversation.id
 
-        participants = await conversation_orchestrator_client.list_participants(conv_id)
+        with tracing.profile_lookup_span(call_sid):
+            participants = await conversation_orchestrator_client.list_participants(conv_id)
 
-        customer_participant = next(
-            (p for p in participants if p.type == "CUSTOMER"),
-            None,
-        )
-        customer_address = (
-            next(
-                (a.address for a in customer_participant.addresses if a.channel == "VOICE"),
+            customer_participant = next(
+                (p for p in participants if p.type == "CUSTOMER"),
                 None,
             )
-            if customer_participant and customer_participant.addresses
-            else None
-        )
+            customer_address = (
+                next(
+                    (a.address for a in customer_participant.addresses if a.channel == "VOICE"),
+                    None,
+                )
+                if customer_participant and customer_participant.addresses
+                else None
+            )
         profile_lookup_address = customer_address or self._caller_address(setup_msg)
         profile_id = customer_participant.profile_id if customer_participant else None
 
@@ -606,6 +608,7 @@ class VoiceChannel(BaseChannel):
                 closed = False
                 response_gen: AsyncGenerator[str | dict[str, Any], None] = response
 
+                first_token_recorded = False
                 try:
                     async for chunk in response_gen:
                         # Handle different chunk types (plain text or dict with metadata)
@@ -622,6 +625,11 @@ class VoiceChannel(BaseChannel):
 
                         try:
                             await websocket.send_text(json.dumps(json_template))
+                            if not first_token_recorded:
+                                session = self._conversations.get(conversation_id)
+                                call_sid = session.metadata.get("call_sid", conversation_id) if session else conversation_id
+                                tracing.record_first_token(call_sid)
+                                first_token_recorded = True
                         except (WebSocketDisconnectError, RuntimeError):
                             self.logger.info(
                                 "WebSocket closed during streaming",
