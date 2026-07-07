@@ -58,27 +58,27 @@ True mouth-to-ear TTFA — cannot be derived from code timestamps alone.
 
 ### Phase 1 — Local Jaeger via Docker
 
-- [ ] **1.1** Run Jaeger all-in-one container
+- [x] **1.1** Run Jaeger all-in-one container
   ```bash
   docker run -d --name jaeger \
     -p 16686:16686 \
     -p 4318:4318 \
     jaegertracing/all-in-one:latest
   ```
-- [ ] **1.2** Update `.env`: `OTEL_ENDPOINT=http://localhost:4318`
-- [ ] **1.3** Start `voice_streaming.py`, make a test call, open `http://localhost:16686` and verify spans appear
-- [ ] **1.4** Confirm `call → turn → memory.recall + llm.completion` hierarchy is visible
+- [x] **1.2** Update `.env`: `OTEL_ENDPOINT=http://localhost:4318`
+- [x] **1.3** Start `voice_streaming.py`, make a test call, open `http://localhost:16686` and verify spans appear
+- [x] **1.4** Confirm `call → turn → memory.recall + llm.completion` hierarchy is visible
 
 ### Phase 2 — Fill in missing TAC spans
 
-- [ ] **2.1** Add `call.co_init` span — wrap the Conversation Orchestrator polling loop at call start
-- [ ] **2.2** Add `call.profile_lookup` span — wrap the profile resolution by phone number
-- [ ] **2.3** Split `llm.completion` into two sub-spans:
+- [x] **2.1** Add `call.co_init` span — wrap the Conversation Orchestrator polling loop at call start
+- [x] **2.2** Add `call.profile_lookup` span — wrap the profile resolution by phone number
+- [x] **2.3** Split `llm.completion` into two sub-spans:
   - `llm.ttft` — ends when first streaming token arrives
   - `llm.generation` — ends when full response is sent to WebSocket
-- [ ] **2.4** Add `response.first_token_sent` event on the `turn` span (timestamp when first byte goes over WebSocket)
-- [ ] **2.5** Wire `inject_traceparent()` into the Recall HTTP call headers (already in `tracing.py`, just not called)
-- [ ] **2.6** Make a test call, verify all new spans in Jaeger
+- [x] **2.4** Add `response.first_token_sent` event on the `turn` span (timestamp when first byte goes over WebSocket)
+- [x] **2.5** Wire `inject_traceparent()` into the Recall HTTP call headers (already in `tracing.py`, just not called)
+- [x] **2.6** Make a test call, verify all new spans in Jaeger
 
 ### Phase 3 — Voice Insights pull
 
@@ -166,3 +166,13 @@ Run same scenario 3× per model, compare:
 ## Execution order
 
 Phase 1 → Phase 2 → Phase 3 → Phase 4 → (Phase 5 optional) → STT comparison
+
+---
+
+## Insights Log
+
+> [!NOTE]
+> **CO init (~535ms) + profile lookup (~457ms) = ~1s overhead at call start** — unavoidable (CO startup time), but now visible in Jaeger.
+
+> [!WARNING]
+> **`memory.recall` TAC-side is 686ms–1.18s per turn; Memora server-side is ~165ms** — the gap (~500–1000ms) is network round-trip through ngrok. Switch `memory_mode` from `"always"` to `"once"` to eliminate recall on turns 2+ with no quality loss (memories don't update mid-call). Expected saving: ~700ms/turn.
