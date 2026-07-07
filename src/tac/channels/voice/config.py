@@ -34,3 +34,11 @@ class VoiceChannelConfig(BaseModel):
         default="never",
         description="Memory retrieval mode for this channel",
     )
+    transcription_provider: str | None = Field(
+        default=None,
+        description="STT provider for ConversationRelay (e.g. 'deepgram', 'google').",
+    )
+    speech_model: str | None = Field(
+        default=None,
+        description="STT model for ConversationRelay (e.g. 'flux', 'nova-3-general').",
+    )

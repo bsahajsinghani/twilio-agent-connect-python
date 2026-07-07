@@ -123,6 +123,37 @@ See `examples/.env.example` for all available configuration options. Key variabl
 ### Optional (Voice Channel)
 - `TWILIO_VOICE_PUBLIC_DOMAIN`: Your ngrok domain (required for voice)
 
+## STT Model Selection
+
+ConversationRelay supports multiple speech-to-text providers and models. You configure this via `VoiceChannel`:
+
+```python
+voice_channel = VoiceChannel(tac, config={
+    "memory_mode": "always",
+    "transcription_provider": "deepgram",
+    "speech_model": "flux",
+})
+```
+
+**Deepgram models** (`transcription_provider="deepgram"`):
+
+| `speech_model` | Description |
+|---|---|
+| `"nova-2-general"` | Default. Fast, general purpose |
+| `"nova-3-general"` | Higher accuracy than nova-2 |
+| `"flux"` | Turn-aware — waits for complete utterances before transcribing. Reduces spurious mid-utterance STT chunks and unnecessary Recall/LLM calls. **Recommended for voice agents.** |
+
+**Google models** (`transcription_provider="google"`):
+
+| `speech_model` | Description |
+|---|---|
+| `"telephony"` | Default Google model, optimized for phone audio |
+| `"latest_long"` | Better for longer utterances |
+
+**Default (omit both fields):** ConversationRelay uses Deepgram nova-2 by default.
+
+> **Note:** If you pass an invalid `speech_model` value, ConversationRelay will return error 64101 and the call will fail before the WebSocket connects. Double-check the model name matches exactly.
+
 ### Optional (OpenAI Example)
 - `OPENAI_API_KEY`: Your OpenAI API key (only needed to run OpenAI examples)
 

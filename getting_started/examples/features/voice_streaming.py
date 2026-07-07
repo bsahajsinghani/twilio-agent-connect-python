@@ -16,7 +16,7 @@ from typing import Any
 from agents import Agent, Runner, set_tracing_disabled
 from dotenv import load_dotenv
 
-from tac import TAC, TACConfig
+from tac import TAC, TACConfig, tracing
 from tac.adapters.prompt_builder import MemoryPromptBuilder
 from tac.channels.voice import VoiceChannel
 from tac.models.session import ConversationSession
@@ -24,10 +24,11 @@ from tac.models.tac import TACMemoryResponse
 from tac.server import TACFastAPIServer
 
 load_dotenv()
+tracing.setup_tracing()
 set_tracing_disabled(True)
 
 tac = TAC(config=TACConfig.from_env())
-voice_channel = VoiceChannel(tac, config={"memory_mode": "always"})
+voice_channel = VoiceChannel(tac, config={"memory_mode": "always", "transcription_provider": "deepgram", "speech_model": "flux"})
 
 SYSTEM_INSTRUCTIONS = (
     "You are a voice assistant speaking with a user over the phone. "

@@ -116,6 +116,18 @@ class TwiMLOptions(BaseModel):
         description="Conversation Service SID for ConversationRelay to automatically "
         "manage conversation creation and participants.",
     )
+    transcription_provider: str | None = Field(
+        None,
+        description="STT provider for ConversationRelay. Options: 'deepgram', 'google'. "
+        "Defaults to ConversationRelay's default (deepgram) if not set.",
+    )
+    speech_model: str | None = Field(
+        None,
+        description="STT model for ConversationRelay. "
+        "Deepgram: 'nova-2-general' (default), 'nova-3-general', 'flux' (turn-aware). "
+        "Google: 'telephony' (default), 'latest_long'. "
+        "Defaults to provider's default if not set.",
+    )
 
     model_config = {"populate_by_name": True}
 

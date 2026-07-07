@@ -3,7 +3,7 @@ from enum import Enum
 
 import httpx
 
-from tac import __version__
+from tac import __version__, tracing
 from tac.core.logging import get_logger
 
 
@@ -97,9 +97,10 @@ class BaseAPIClient:
 
     def _get_client(self) -> httpx.AsyncClient:
         """Create a new httpx.AsyncClient for each request to avoid event loop issues."""
+        headers = tracing.inject_traceparent({"User-Agent": self._get_user_agent()})
         return httpx.AsyncClient(
             auth=(self.api_key, self.api_secret),
-            headers={"User-Agent": self._get_user_agent()},
+            headers=headers,
             timeout=30.0,
             follow_redirects=True,
         )

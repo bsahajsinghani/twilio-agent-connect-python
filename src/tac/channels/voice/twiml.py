@@ -52,6 +52,8 @@ def generate_twiml(
     welcome_greeting = options.welcome_greeting
     action_url = options.action_url
     conversation_configuration = options.conversation_configuration
+    transcription_provider = options.transcription_provider
+    speech_model = options.speech_model
 
     # Create VoiceResponse
     response = VoiceResponse()
@@ -68,6 +70,10 @@ def generate_twiml(
         relay_kwargs["welcome_greeting"] = welcome_greeting
     if conversation_configuration:
         relay_kwargs["conversation_configuration"] = conversation_configuration
+    if transcription_provider:
+        relay_kwargs["transcriptionProvider"] = transcription_provider
+    if speech_model:
+        relay_kwargs["speechModel"] = speech_model
 
     # Create ConversationRelay
     relay = connect.conversation_relay(**relay_kwargs)

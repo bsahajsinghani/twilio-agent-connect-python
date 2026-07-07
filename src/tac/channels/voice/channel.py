@@ -26,6 +26,8 @@ from tac.models.voice import (
 from tac.session import SessionState
 from tac.utils.redaction import mask_phone
 
+from tac import tracing
+
 from . import twiml
 from .config import VoiceChannelConfig
 
@@ -74,8 +76,12 @@ class VoiceChannel(BaseChannel):
 
         super().__init__(tac, memory_mode=config.memory_mode)
         self.session_manager = config.session_manager
+        self.transcription_provider = config.transcription_provider
+        self.speech_model = config.speech_model
         self._websocket_manager = WebSocketManager()
         self._twilio_client: Client | None = None
+        self._stt_chunk_counts: dict[str, int] = {}
+        self._stt_processed_counts: dict[str, int] = {}
 
     @staticmethod
     def _caller_address(setup_msg: SetupMessage) -> str | None:
@@ -141,6 +147,8 @@ class VoiceChannel(BaseChannel):
                 welcome_greeting=options.welcome_greeting,
                 action_url=options.action_url,
                 conversation_configuration=self.tac.config.conversation_configuration_id,
+                transcription_provider=self.transcription_provider,
+                speech_model=self.speech_model,
             )
         )
 
@@ -280,6 +288,9 @@ class VoiceChannel(BaseChannel):
                 setup_msg = SetupMessage(**data)
                 call_sid = setup_msg.call_sid
 
+                self.logger.info("Call started", call_sid=call_sid)
+                tracing.start_call(call_sid)
+
                 # Don't initialize conversation yet - wait for first prompt
                 # when ConversationRelay has created the conversation
 
@@ -309,6 +320,10 @@ class VoiceChannel(BaseChannel):
                                     session_state = self.session_manager.get_or_create_session(
                                         conv_id
                                     )
+
+                            # Store call_sid so turn handlers can tag traces/logs
+                            if conv_id and conv_id in self._conversations:
+                                self._conversations[conv_id].metadata["call_sid"] = call_sid
 
                         if conv_id:
                             await self._handle_prompt_async(conv_id, data, session_state)
@@ -368,6 +383,8 @@ class VoiceChannel(BaseChannel):
                     action_url=options.action_url,
                     conversation_configuration=self.tac.config.conversation_configuration_id,
                     custom_parameters=options.custom_parameters,
+                    transcription_provider=self.transcription_provider,
+                    speech_model=self.speech_model,
                 )
             )
 
@@ -409,7 +426,32 @@ class VoiceChannel(BaseChannel):
         """
         try:
             should_process = data.get("final", True)
+            is_final = data.get("final", "MISSING")
+            utterance = data.get("voicePrompt", data.get("voice_prompt", ""))
+
+            # STT chunking diagnostics
+            self._stt_chunk_counts[conv_id] = self._stt_chunk_counts.get(conv_id, 0) + 1
+            chunks_so_far = self._stt_chunk_counts[conv_id]
+            processed_so_far = self._stt_processed_counts.get(conv_id, 0)
+            model_label = self.speech_model or "default"
+            print(
+                f"[STT] model={model_label} final={is_final} "
+                f"chunks={chunks_so_far} processed={processed_so_far} "
+                f"text={utterance!r}"
+            )
+
             if should_process:
+                self._stt_processed_counts[conv_id] = (
+                    self._stt_processed_counts.get(conv_id, 0) + 1
+                )
+                total_chunks = self._stt_chunk_counts.get(conv_id, 0)
+                total_processed = self._stt_processed_counts[conv_id]
+                print(
+                    f"[STT TURN {total_processed}] firing Recall+LLM "
+                    f"(processed {total_processed}/{total_chunks} chunks so far) "
+                    f"text={utterance!r}"
+                )
+
                 prompt_msg = PromptMessage(**data)
                 conv_id = prompt_msg.conversation_id or conv_id
 
@@ -672,23 +714,31 @@ class VoiceChannel(BaseChannel):
 
         message_body = message.voice_prompt or ""
         session = self._conversations[conv_id]
+        call_sid: str = session.metadata.get("call_sid", conv_id)
 
-        # Retrieve memory if memory_mode is enabled and Twilio Memory is configured
-        memory_response = await self._retrieve_memory_if_enabled(session, message_body, conv_id)
+        with tracing.turn_span(call_sid, message_body):
+            # Retrieve memory if memory_mode is enabled and Twilio Memory is configured
+            with tracing.memory_span(call_sid):
+                memory_response = await self._retrieve_memory_if_enabled(
+                    session, message_body, conv_id
+                )
 
-        # Trigger message ready callback
-        try:
-            response = await self.tac.trigger_message_ready(message_body, session, memory_response)
-            # Auto-send if callback returned a string (None = manual send_response flow)
-            if response is not None:
-                await self.send_response(conv_id, response, role="assistant")
-        except Exception as e:
-            self.logger.error(
-                "Error in message ready callback",
-                conversation_id=conv_id,
-                error=str(e),
-                exc_info=True,
-            )
+            # Trigger message ready callback (LLM call + response send happen inside)
+            try:
+                with tracing.llm_span(call_sid):
+                    response = await self.tac.trigger_message_ready(
+                        message_body, session, memory_response
+                    )
+                # Auto-send if callback returned a string (None = manual send_response flow)
+                if response is not None:
+                    await self.send_response(conv_id, response, role="assistant")
+            except Exception as e:
+                self.logger.error(
+                    "Error in message ready callback",
+                    conversation_id=conv_id,
+                    error=str(e),
+                    exc_info=True,
+                )
 
     def _handle_interrupt(self, conv_id: str, message: InterruptMessage) -> None:
         """
@@ -726,6 +776,18 @@ class VoiceChannel(BaseChannel):
         if self._websocket_manager.has_websocket(conv_id):
             self._websocket_manager.remove_websocket(conv_id)
 
+        # Print final STT chunking summary for this call
+        total_chunks = self._stt_chunk_counts.pop(conv_id, 0)
+        total_processed = self._stt_processed_counts.pop(conv_id, 0)
+        if total_chunks:
+            skipped = total_chunks - total_processed
+            model_label = self.speech_model or "default"
+            print(
+                f"[STT SUMMARY] model={model_label} "
+                f"total_chunks={total_chunks} processed={total_processed} skipped={skipped} "
+                f"({'%.0f' % (skipped/total_chunks*100)}% skipped)"
+            )
+
         # Cancel running stream task and cleanup session if session manager is enabled
         if self.session_manager is not None and self.session_manager.has_session(conv_id):
             session_state = self.session_manager.get_or_create_session(conv_id)
@@ -751,6 +813,8 @@ class VoiceChannel(BaseChannel):
                     )
         elif conv_id in self._conversations:
             await self._end_conversation(conv_id)
+
+        tracing.end_call(conv_id)
 
         self.logger.debug(
             "Cleaned up WebSocket and session resources",

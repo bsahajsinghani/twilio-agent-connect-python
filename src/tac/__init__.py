@@ -9,6 +9,7 @@ from tac.core import TAC, TACConfig, get_logger
 from tac.context.base import PartnerConnector
 from tac.models import TwiMLOptions
 from tac.utils.redaction import mask_address, mask_email, mask_phone
+from tac import tracing
 
 # isort: on
 
@@ -21,5 +22,6 @@ __all__ = [
     "mask_address",
     "mask_email",
     "mask_phone",
+    "tracing",
     "__version__",
 ]
