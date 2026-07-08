@@ -176,3 +176,6 @@ Phase 1 → Phase 2 → Phase 3 → Phase 4 → (Phase 5 optional) → STT compa
 
 > [!WARNING]
 > **`memory.recall` TAC-side is 686ms–1.18s per turn; Memora server-side is ~165ms** — the gap (~500–1000ms) is network round-trip through ngrok. Switch `memory_mode` from `"always"` to `"once"` to eliminate recall on turns 2+ with no quality loss (memories don't update mid-call). Expected saving: ~700ms/turn.
+
+> [!NOTE]
+> **The overhead is not a region mismatch — TAC and Memora are both in `us-east-1`, same AWS building (intra-AZ).** The extra ~280ms per recall is TLS: every time TAC calls Memora it creates a brand-new encrypted connection from scratch, paying the encryption setup cost before any real work starts. If the HTTP client were reused across calls (connection pooling), TLS is paid once and each recall would drop from ~450ms to ~165ms. Combined with `memory_mode: "once"`, per-turn recall overhead goes from ~700ms to near zero after turn 1.
