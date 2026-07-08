@@ -609,46 +609,47 @@ class VoiceChannel(BaseChannel):
                 response_gen: AsyncGenerator[str | dict[str, Any], None] = response
 
                 first_token_recorded = False
+                _stream_session = self._conversations.get(conversation_id)
+                _stream_call_sid = _stream_session.metadata.get("call_sid", conversation_id) if _stream_session else conversation_id
                 try:
-                    async for chunk in response_gen:
-                        # Handle different chunk types (plain text or dict with metadata)
-                        if isinstance(chunk, dict):
-                            if "output" in chunk:
-                                token = chunk["output"]
+                    with tracing.llm_response_stream_span(_stream_call_sid):
+                        async for chunk in response_gen:
+                            # Handle different chunk types (plain text or dict with metadata)
+                            if isinstance(chunk, dict):
+                                if "output" in chunk:
+                                    token = chunk["output"]
+                                else:
+                                    token = str(chunk)
                             else:
-                                token = str(chunk)
-                        else:
-                            token = chunk
+                                token = chunk
 
-                        full_response += token
-                        json_template["token"] = token
+                            full_response += token
+                            json_template["token"] = token
 
-                        try:
-                            await websocket.send_text(json.dumps(json_template))
-                            if not first_token_recorded:
-                                session = self._conversations.get(conversation_id)
-                                call_sid = session.metadata.get("call_sid", conversation_id) if session else conversation_id
-                                tracing.record_first_token(call_sid)
-                                first_token_recorded = True
-                        except (WebSocketDisconnectError, RuntimeError):
-                            self.logger.info(
-                                "WebSocket closed during streaming",
-                                conversation_id=conversation_id,
-                            )
-                            closed = True
-                            break
+                            try:
+                                await websocket.send_text(json.dumps(json_template))
+                                if not first_token_recorded:
+                                    tracing.record_first_token(_stream_call_sid)
+                                    first_token_recorded = True
+                            except (WebSocketDisconnectError, RuntimeError):
+                                self.logger.info(
+                                    "WebSocket closed during streaming",
+                                    conversation_id=conversation_id,
+                                )
+                                closed = True
+                                break
 
-                    # Send final message marker
-                    if not closed:
-                        try:
-                            await websocket.send_text(
-                                json.dumps({"type": "text", "token": "", "last": True})
-                            )
-                        except (WebSocketDisconnectError, RuntimeError):
-                            self.logger.info(
-                                "WebSocket closed before sending final marker",
-                                conversation_id=conversation_id,
-                            )
+                        # Send final message marker
+                        if not closed:
+                            try:
+                                await websocket.send_text(
+                                    json.dumps({"type": "text", "token": "", "last": True})
+                                )
+                            except (WebSocketDisconnectError, RuntimeError):
+                                self.logger.info(
+                                    "WebSocket closed before sending final marker",
+                                    conversation_id=conversation_id,
+                                )
                 except asyncio.CancelledError:
                     # Let Python's async generator cleanup handle closing the generator
                     raise

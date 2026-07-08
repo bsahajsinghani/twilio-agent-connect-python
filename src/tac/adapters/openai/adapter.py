@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, overload
 from tac.adapters.options import AdapterOptions
 from tac.adapters.prompt_builder import MemoryPromptBuilder
 from tac.core.logging import get_logger
+from tac import tracing
 from tac.models.session import ConversationSession
 from tac.models.tac import TACMemoryResponse
 
@@ -310,23 +311,20 @@ def _inject_memory(
         Enhanced messages with memory injected as first system message,
         or original messages if no memory data is available.
     """
-    # Build memory prompt using shared builder
-    memory_content = MemoryPromptBuilder.build(memory_response, context, options)
+    call_sid = context.metadata.get("call_sid", "") if context else ""
+    with tracing.llm_prompt_build_span(call_sid):
+        memory_content = MemoryPromptBuilder.build(memory_response, context, options)
 
-    # No memory to inject
-    if not memory_content:
-        return messages
+        if not memory_content:
+            return messages
 
-    logger.debug("[ADAPTER:OPENAI] Injecting memory context")
+        logger.debug("[ADAPTER:OPENAI] Injecting memory context")
 
-    # Create a copy to avoid mutating original messages
-    enhanced_messages = copy.deepcopy(messages)
-
-    # Insert memory as system message at the start
-    memory_message: ChatCompletionMessageParam = {
-        "role": "system",
-        "content": memory_content,
-    }
-    enhanced_messages.insert(0, memory_message)
+        enhanced_messages = copy.deepcopy(messages)
+        memory_message: ChatCompletionMessageParam = {
+            "role": "system",
+            "content": memory_content,
+        }
+        enhanced_messages.insert(0, memory_message)
 
     return enhanced_messages

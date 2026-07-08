@@ -172,6 +172,81 @@ def llm_span(call_sid: str) -> Iterator[Any]:
         yield span
 
 
+@contextmanager
+def memory_profile_lookup_span(call_sid: str) -> Iterator[Any]:
+    """Sub-span under memory.recall — wraps lookup_profile() HTTP call.
+
+    Runs when profile_id is not set and TAC needs to resolve it from the
+    caller's phone number via the Memory API.
+    """
+    tracer = _get_tracer()
+    with tracer.start_as_current_span(
+        "memory.profile_lookup",
+        attributes={"call.sid": call_sid},
+    ) as span:
+        yield span
+
+
+@contextmanager
+def memory_profile_fetch_span(call_sid: str) -> Iterator[Any]:
+    """Sub-span under memory.recall — wraps get_profile() HTTP call.
+
+    Fetches full profile traits (name, contact info, etc.) from the Memory API
+    once the profile_id is known.
+    """
+    tracer = _get_tracer()
+    with tracer.start_as_current_span(
+        "memory.profile_fetch",
+        attributes={"call.sid": call_sid},
+    ) as span:
+        yield span
+
+
+@contextmanager
+def memory_recall_api_span(call_sid: str) -> Iterator[Any]:
+    """Sub-span under memory.recall — wraps the actual retrieve_memory() HTTP call.
+
+    This is the Memora vector search call — embedding + OpenSearch query.
+    Should match the recall.duration seen on Memora's Grafana (~165ms server-side).
+    """
+    tracer = _get_tracer()
+    with tracer.start_as_current_span(
+        "memory.recall_api",
+        attributes={"call.sid": call_sid},
+    ) as span:
+        yield span
+
+
+@contextmanager
+def llm_prompt_build_span(call_sid: str) -> Iterator[Any]:
+    """Sub-span under llm.completion — wraps prompt construction + memory injection.
+
+    Covers MemoryPromptBuilder.build/compose() and deepcopy of messages.
+    Usually small (<10ms) but confirms no surprise overhead.
+    """
+    tracer = _get_tracer()
+    with tracer.start_as_current_span(
+        "llm.prompt_build",
+        attributes={"call.sid": call_sid},
+    ) as span:
+        yield span
+
+
+@contextmanager
+def llm_response_stream_span(call_sid: str) -> Iterator[Any]:
+    """Sub-span under llm.completion — wraps the WebSocket streaming loop.
+
+    Starts when first token is sent to Twilio, ends when last token is sent.
+    Duration = how long the agent was actively speaking (streaming tokens).
+    """
+    tracer = _get_tracer()
+    with tracer.start_as_current_span(
+        "llm.response_stream",
+        attributes={"call.sid": call_sid},
+    ) as span:
+        yield span
+
+
 def record_first_token(call_sid: str) -> None:
     """Add a 'first_token_sent' event to the currently active span.
 

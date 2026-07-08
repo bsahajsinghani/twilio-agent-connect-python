@@ -11,6 +11,7 @@ from tac.context.knowledge import KnowledgeClient
 from tac.context.memory import MemoryClient
 from tac.core.config import TACConfig
 from tac.core.logging import get_logger, setup_logging
+from tac import tracing
 from tac.intelligence.operator_result_processor import OperatorResultProcessor
 from tac.models.intelligence import OperatorProcessingResult
 from tac.models.memory import ProfileLookupResponse
@@ -157,6 +158,10 @@ class TAC:
             return TACMemoryResponse([])
 
         try:
+            call_sid: str = conversation_context.metadata.get(
+                "call_sid", conversation_context.conversation_id
+            )
+
             if not conversation_context.profile_id:
                 self.logger.debug(
                     "profile_id not found, attempting to lookup profile using address"
@@ -165,12 +170,13 @@ class TAC:
                 if conversation_context.author_info and conversation_context.author_info.address:
                     address = conversation_context.author_info.address
                     id_type = "email" if "@" in address else "phone"
-                    lookup_response: ProfileLookupResponse = (
-                        await self.conversation_memory_client.lookup_profile(
-                            id_type=id_type,
-                            value=address,
+                    with tracing.memory_profile_lookup_span(call_sid):
+                        lookup_response: ProfileLookupResponse = (
+                            await self.conversation_memory_client.lookup_profile(
+                                id_type=id_type,
+                                value=address,
+                            )
                         )
-                    )
 
                     if lookup_response.profiles:
                         conversation_context.profile_id = lookup_response.profiles[0]
@@ -186,10 +192,11 @@ class TAC:
 
             if conversation_context.profile_id and not conversation_context.profile:
                 try:
-                    profile_response = await self.conversation_memory_client.get_profile(
-                        profile_id=conversation_context.profile_id,
-                        trait_groups=self.config.memory_config.trait_groups,
-                    )
+                    with tracing.memory_profile_fetch_span(call_sid):
+                        profile_response = await self.conversation_memory_client.get_profile(
+                            profile_id=conversation_context.profile_id,
+                            trait_groups=self.config.memory_config.trait_groups,
+                        )
                     conversation_context.profile = profile_response
                 except asyncio.CancelledError:
                     raise
@@ -202,15 +209,16 @@ class TAC:
 
             # Get memory retrieval configuration
             cfg = self.config.memory_config
-            memory_response = await self.conversation_memory_client.retrieve_memory(
-                profile_id=conversation_context.profile_id,
-                conversation_id=conversation_context.conversation_id,
-                query=query,
-                observations_limit=cfg.observations_limit,
-                summaries_limit=cfg.summaries_limit,
-                communications_limit=cfg.communications_limit,
-                relevance_threshold=cfg.relevance_threshold,
-            )
+            with tracing.memory_recall_api_span(call_sid):
+                memory_response = await self.conversation_memory_client.retrieve_memory(
+                    profile_id=conversation_context.profile_id,
+                    conversation_id=conversation_context.conversation_id,
+                    query=query,
+                    observations_limit=cfg.observations_limit,
+                    summaries_limit=cfg.summaries_limit,
+                    communications_limit=cfg.communications_limit,
+                    relevance_threshold=cfg.relevance_threshold,
+                )
             return TACMemoryResponse(memory_response)
 
         except Exception as e:
