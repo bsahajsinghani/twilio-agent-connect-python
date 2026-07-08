@@ -25,9 +25,12 @@ Returns per-call averages across all turns.
 | Metric | JSON field | Notes |
 |---|---|---|
 | STT latency | `stt_latency_ms` | Deepgram processing time |
-| TTS latency | `tts_latency_ms` | ElevenLabs/Twilio TTS processing |
-| Time to first audio | `time_to_first_audio_ms` | Coarse TTFA from Twilio's perspective |
-| Application latency | `application_latency_ms` | Time Twilio waited for our app (LLM + overhead) |
+| TTS latency | `tts_latency_ms` | TTS audio generation time |
+| Time to first audio | `time_to_first_audio_ms` | TTFA — what user actually hears. **Twilio flags calls > 1200ms as poor experience.** |
+| Application latency | `application_latency_ms` | Time Twilio waited for our app (Recall + LLM). app + tts ≈ TTFA. |
+| Words per minute | `words_per_minute` (avg) | Agent speaking rate. Natural human speech = 120–180 wpm. |
+| Tokens per call | `tokens` (total) | Total WebSocket chunks sent per call |
+| Interruption rate | `interruptions` | How often user interrupted agent. High = agent too slow. Should drop as latency improves. |
 | Number of turns | `turns` | |
 
 ### C. TAC Local OTel → Jaeger (need to set up)
@@ -151,21 +154,77 @@ True mouth-to-ear TTFA — cannot be derived from code timestamps alone.
 
 ---
 
-## STT Model Comparison (after experiment runner is working)
+## Industry Latency Standards for Voice AI
 
-Run same scenario 3× per model, compare:
+Referenced from Twilio's own ConversationRelay Insights dashboard and voice AI research:
 
-| Model | `stt_latency_ms` | `application_latency_ms` | `time_to_first_audio_ms` | STT chunks/turn |
-|---|---|---|---|---|
-| nova-2 (default) | | | | |
-| nova-3 | | | | |
-| flux (turn-aware) | | | | |
+| Metric | Good | Acceptable | Poor |
+|---|---|---|---|
+| TTFA (`time_to_first_audio_ms`) | < 800ms | < 1200ms | > 1200ms ⚠️ Twilio flags these |
+| TTFT (`first_token_sent`) | < 500ms | < 800ms | > 1000ms |
+| Application latency | < 600ms | < 1000ms | > 1500ms |
+| Agent speaking rate | 130–160 wpm | 120–180 wpm | < 100 or > 200 wpm |
+| Interruption rate | < 10% of turns | < 20% | > 30% (users giving up) |
+
+> Current baseline (from first traces): TTFA ~3924ms, application latency ~3707ms — well above acceptable thresholds. Primary bottleneck is LLM. Secondary bottleneck is Recall TLS overhead.
+
+---
+
+## Experiment Configurations (Proposal Phases 1 & 2)
+
+Run each with the same scenario (`knowledge_update`) and same call count (3 runs, take median).
+
+### Phase 1 — Baseline & Traditional Recall
+
+| Experiment | `memory_mode` | Notes |
+|---|---|---|
+| `1a_no_memory` | `"never"` | Pure speed baseline. No memory at all. |
+| `1b_recall_always` | `"always"` | Semantic recall on every utterance (current default). |
+| `1c_recall_tool_call` | LLM tool | LLM decides when to call Recall. (requires TAC tool wiring) |
+
+### Phase 2 — Startup Memory Ingestion
+
+| Experiment | `memory_mode` | Memory limit | Notes |
+|---|---|---|---|
+| `2a_recall_once` | `"once"` | unlimited | Fetch all memories at call start, zero recalls after. |
+| `2b_top_10` | `"once"` | 10 | Fixed count sweep — does memory count affect latency? |
+| `2b_top_20` | `"once"` | 20 | |
+| `2b_top_50` | `"once"` | 50 | |
+| `2b_top_100` | `"once"` | 100 | |
+| `2b_top_200` | `"once"` | 200 | |
+| `2b_top_500` | `"once"` | 500 | Expected: latency increases as prompt grows → LLM context overhead |
+
+---
+
+## Going Deeper — Intern Differentiators
+
+These go beyond the proposal. Each one is a concrete optimization with a before/after measurement.
+
+| # | What | Expected impact | Status |
+|---|---|---|---|
+| D1 | **Fix TLS connection pooling in `BaseAPIClient`** — reuse httpx `AsyncClient` instead of creating new one per request | Drop per-recall from ~450ms → ~165ms | ❌ not done |
+| D2 | **`memory_mode: "once"` + connection pooling combined** | Recall cost turns 2+ → ~0ms | ❌ not done |
+| D3 | **STT model comparison** — nova-2 vs nova-3 vs flux on same scenario | Chunk:turn ratio + STT latency impact | ✅ flux wired, comparison not run yet |
+| D4 | **Prompt caching** — restructure system prompt so static content (instructions + memories loaded at startup) is always the prefix, dynamic content (conversation history) always appended after. OpenAI caches the prefix automatically. | Reduce TPOT (time per output token), improve throughput on long calls | ❌ not done |
+| D5 | **Interruption rate as a proxy metric** — track how interruption rate changes across memory strategies. Lower latency → fewer interruptions → better UX | Qualitative proof that latency improvements matter | ❌ not tracked yet |
+
+---
+
+## STT Model Comparison
+
+Run same scenario 3× per model:
+
+| Model | `stt_latency_ms` | `application_latency_ms` | `time_to_first_audio_ms` | interruptions | STT chunks/turn |
+|---|---|---|---|---|---|
+| nova-2 (default) | | | | | |
+| nova-3 | | | | | |
+| flux (turn-aware) | | | | | |
 
 ---
 
 ## Execution order
 
-Phase 1 → Phase 2 → Phase 3 → Phase 4 → (Phase 5 optional) → STT comparison
+Infra (Phases 1–3 done) → Experiment runner (Phase 4) → Run experiments (Proposal Phase 1 → 2) → Differentiators (D1–D5) → Results + blog post
 
 ---
 
