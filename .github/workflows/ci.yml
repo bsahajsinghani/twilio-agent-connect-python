@@ -162,7 +162,7 @@ jobs:
         run: |
           uv venv
           . .venv/bin/activate
-          pip install twine
+          pip install -r .github/ci-requirements.txt
           twine check dist/*
 
       - name: Test package installation
