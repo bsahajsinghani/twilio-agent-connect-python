@@ -1,17 +1,20 @@
 """OpenTelemetry tracing setup for TAC.
 
-Exports traces to the Twilio internal OTel gateway.
+Exports traces to any OTel-compatible backend (Jaeger, Grafana Tempo, Honeycomb, Datadog).
+Requires the tac[tracing] optional extra: pip install tac[tracing]
+
 Configure via environment variables:
     OTEL_ENABLED=true           (default: false)
-    OTEL_ENDPOINT               (default: https://otelgw-pub0.us-east-1.dev.platform.twilioinfra.com)
+    OTEL_ENDPOINT               (default: http://localhost:4318)
     OTEL_SERVICE_NAME           (default: tac-voice-agent)
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 _DEFAULT_ENDPOINT = "http://localhost:4318"
 _DEFAULT_SERVICE_NAME = "tac-voice-agent"
@@ -89,7 +92,7 @@ def end_call(call_sid: str) -> None:
 
 def _get_call_context(call_sid: str) -> Any:
     """Return an OTel context containing the root span, or None."""
-    from opentelemetry.trace import NonRecordingSpan, use_span
+    from opentelemetry.trace import use_span
 
     span = _call_spans.get(call_sid)
     if span is None:

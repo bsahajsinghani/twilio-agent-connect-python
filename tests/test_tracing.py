@@ -1,7 +1,6 @@
 """Tests for tac.tracing — OTel span lifecycle and no-op behaviour."""
 
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -37,11 +36,9 @@ class TestSetupTracingDisabled:
         tracing._tracer = None
 
         with patch.dict("sys.modules", {"opentelemetry": None}):
-            import logging
-            with patch.object(logging.getLogger("tac.tracing"), "warning") as mock_warn:
-                tracing.setup_tracing()
-                # Either warns about missing packages or succeeds if installed
-                # — just confirm no exception is raised
+            tracing.setup_tracing()
+            # Either warns about missing packages or succeeds if installed
+            # — just confirm no exception is raised
         assert tracing._tracer_provider is None or tracing._tracer_provider is not None
 
 

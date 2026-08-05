@@ -5,13 +5,13 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from tac import tracing
 from tac.context.base import BaseAPIClient, PartnerConnector
 from tac.context.conversation import ConversationClient
 from tac.context.knowledge import KnowledgeClient
 from tac.context.memory import MemoryClient
 from tac.core.config import TACConfig
 from tac.core.logging import get_logger, setup_logging
-from tac import tracing
 from tac.intelligence.operator_result_processor import OperatorResultProcessor
 from tac.models.intelligence import OperatorProcessingResult
 from tac.models.memory import ProfileLookupResponse
