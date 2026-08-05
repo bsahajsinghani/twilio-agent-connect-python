@@ -13,7 +13,7 @@ import os
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-_DEFAULT_ENDPOINT = "https://otelgw-pub0.us-east-1.dev.platform.twilioinfra.com"
+_DEFAULT_ENDPOINT = "http://localhost:4318"
 _DEFAULT_SERVICE_NAME = "tac-voice-agent"
 
 _tracer_provider: Any = None
@@ -26,17 +26,29 @@ _turn_counters: dict[str, int] = {}
 
 
 def setup_tracing() -> None:
-    """Initialize OTel tracing if OTEL_ENABLED=true."""
+    """Initialize OTel tracing if OTEL_ENABLED=true.
+
+    Requires the tac[tracing] optional extra to be installed.
+    If OTEL_ENABLED is not set or the packages are not installed, this is a no-op.
+    """
     global _tracer_provider, _tracer
 
     if os.environ.get("OTEL_ENABLED", "").lower() != "true":
         return
 
-    from opentelemetry import trace
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError:
+        import logging
+        logging.getLogger(__name__).warning(
+            "OTEL_ENABLED=true but opentelemetry packages are not installed. "
+            "Run: pip install tac[tracing]"
+        )
+        return
 
     endpoint = os.environ.get("OTEL_ENDPOINT", _DEFAULT_ENDPOINT)
     service_name = os.environ.get("OTEL_SERVICE_NAME", _DEFAULT_SERVICE_NAME)
@@ -260,6 +272,21 @@ def record_first_token(call_sid: str) -> None:
     span.add_event("first_token_sent", {"call.sid": call_sid})
 
 
+def get_trace_id(call_sid: str) -> str | None:
+    """Return the hex trace ID for a call's root span, or None if not found.
+
+    Useful for logging the Jaeger trace ID alongside the call SID so results
+    can be cross-referenced with the Jaeger UI.
+    """
+    span = _call_spans.get(call_sid)
+    if span is None:
+        return None
+    ctx = span.get_span_context()
+    if ctx is None or not ctx.is_valid:
+        return None
+    return format(ctx.trace_id, "032x")
+
+
 def inject_traceparent(headers: dict[str, str]) -> dict[str, str]:
     """Return a copy of headers with W3C traceparent injected from the current span context."""
     from opentelemetry.propagate import inject
@@ -267,6 +294,27 @@ def inject_traceparent(headers: dict[str, str]) -> dict[str, str]:
     carrier: dict[str, str] = dict(headers)
     inject(carrier)
     return carrier
+
+
+@contextmanager
+def first_prompt_wait_span(call_sid: str) -> Iterator[Any]:
+    """Child span wrapping the await of init_task on the first prompt.
+
+    Measures how long the first prompt was blocked waiting for _initialize_conversation
+    to complete. Ideally 0ms — init_task finished during user speech. Non-zero means
+    co_init outlasted user speech and the first response was delayed.
+    """
+    from opentelemetry import context, trace
+
+    root_span = _call_spans.get(call_sid)
+    ctx = trace.set_span_in_context(root_span) if root_span is not None else context.get_current()
+    tracer = _get_tracer()
+    with tracer.start_as_current_span(
+        "call.first_prompt_wait",
+        context=ctx,
+        attributes={"call.sid": call_sid},
+    ) as span:
+        yield span
 
 
 def shutdown_tracing() -> None:
