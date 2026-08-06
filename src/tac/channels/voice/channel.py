@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 from pydantic import ValidationError
 
+from tac import tracing
 from tac.channels.base import BaseChannel
 from tac.channels.websocket_manager import WebSocketManager
 from tac.channels.websocket_protocol import WebSocketDisconnectError, WebSocketProtocol
@@ -25,8 +26,6 @@ from tac.models.voice import (
 )
 from tac.session import SessionState
 from tac.utils.redaction import mask_phone
-
-from tac import tracing
 
 from . import twiml
 from .config import VoiceChannelConfig
@@ -436,10 +435,13 @@ class VoiceChannel(BaseChannel):
             chunks_so_far = self._stt_chunk_counts[conv_id]
             processed_so_far = self._stt_processed_counts.get(conv_id, 0)
             model_label = self.speech_model or "default"
-            print(
-                f"[STT] model={model_label} final={is_final} "
-                f"chunks={chunks_so_far} processed={processed_so_far} "
-                f"text={utterance!r}"
+            self.logger.debug(
+                "STT chunk received",
+                model=model_label,
+                final=is_final,
+                chunks=chunks_so_far,
+                processed=processed_so_far,
+                text=utterance,
             )
 
             if should_process:
@@ -448,10 +450,12 @@ class VoiceChannel(BaseChannel):
                 )
                 total_chunks = self._stt_chunk_counts.get(conv_id, 0)
                 total_processed = self._stt_processed_counts[conv_id]
-                print(
-                    f"[STT TURN {total_processed}] firing Recall+LLM "
-                    f"(processed {total_processed}/{total_chunks} chunks so far) "
-                    f"text={utterance!r}"
+                self.logger.debug(
+                    "STT turn firing",
+                    turn=total_processed,
+                    processed=total_processed,
+                    total_chunks=total_chunks,
+                    text=utterance,
                 )
 
                 prompt_msg = PromptMessage(**data)
@@ -610,7 +614,11 @@ class VoiceChannel(BaseChannel):
 
                 first_token_recorded = False
                 _stream_session = self._conversations.get(conversation_id)
-                _stream_call_sid = _stream_session.metadata.get("call_sid", conversation_id) if _stream_session else conversation_id
+                _stream_call_sid = (
+                    _stream_session.metadata.get("call_sid", conversation_id)
+                    if _stream_session
+                    else conversation_id
+                )
                 try:
                     with tracing.llm_response_stream_span(_stream_call_sid):
                         async for chunk in response_gen:
@@ -785,16 +793,18 @@ class VoiceChannel(BaseChannel):
         if self._websocket_manager.has_websocket(conv_id):
             self._websocket_manager.remove_websocket(conv_id)
 
-        # Print final STT chunking summary for this call
         total_chunks = self._stt_chunk_counts.pop(conv_id, 0)
         total_processed = self._stt_processed_counts.pop(conv_id, 0)
         if total_chunks:
             skipped = total_chunks - total_processed
             model_label = self.speech_model or "default"
-            print(
-                f"[STT SUMMARY] model={model_label} "
-                f"total_chunks={total_chunks} processed={total_processed} skipped={skipped} "
-                f"({'%.0f' % (skipped/total_chunks*100)}% skipped)"
+            self.logger.debug(
+                "STT call summary",
+                model=model_label,
+                total_chunks=total_chunks,
+                processed=total_processed,
+                skipped=skipped,
+                skipped_pct=round(skipped / total_chunks * 100),
             )
 
         # Cancel running stream task and cleanup session if session manager is enabled
