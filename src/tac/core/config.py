@@ -24,10 +24,6 @@ class ConversationIntelligenceConfig(BaseModel):
     configuration_id: str = Field(
         description="Conversation Intelligence Configuration ID",
     )
-    observation_operator_sid: str | None = Field(
-        default=None,
-        description="Operator SID for observation extraction (e.g., LY...)",
-    )
     summary_operator_sid: str | None = Field(
         default=None,
         description="Operator SID for summary extraction (e.g., LY...)",
@@ -37,7 +33,6 @@ class ConversationIntelligenceConfig(BaseModel):
         json_schema_extra={
             "example": {
                 "configuration_id": "your_ci_configuration_id",
-                "observation_operator_sid": "LY00000000000000000000000000000001",
                 "summary_operator_sid": "LY00000000000000000000000000000002",
             }
         },
@@ -45,18 +40,22 @@ class ConversationIntelligenceConfig(BaseModel):
 
     @classmethod
     def from_env(cls) -> "ConversationIntelligenceConfig | None":
-        """Create ConversationIntelligenceConfig from CONVERSATION_INTELLIGENCE_* env vars."""
+        """Create ConversationIntelligenceConfig from CONVERSATION_INTELLIGENCE_* env vars.
+
+        Blank or whitespace-only operator SIDs are treated as not configured.
+        """
         configuration_id = os.environ.get("CONVERSATION_INTELLIGENCE_CONFIGURATION_ID")
 
         if not configuration_id:
             return None
 
+        summary_operator_sid = os.environ.get("CONVERSATION_INTELLIGENCE_SUMMARY_OPERATOR_SID")
+        if summary_operator_sid is not None and not summary_operator_sid.strip():
+            summary_operator_sid = None
+
         return cls(
             configuration_id=configuration_id,
-            observation_operator_sid=os.environ.get(
-                "CONVERSATION_INTELLIGENCE_OBSERVATION_OPERATOR_SID"
-            ),
-            summary_operator_sid=os.environ.get("CONVERSATION_INTELLIGENCE_SUMMARY_OPERATOR_SID"),
+            summary_operator_sid=summary_operator_sid,
         )
 
 
@@ -372,7 +371,6 @@ class TACConfig(BaseModel):
                 },
                 "conversation_intelligence_config": {
                     "configuration_id": "GAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-                    "observation_operator_sid": "LYxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
                     "summary_operator_sid": "LYyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
                 },
             }
@@ -427,8 +425,6 @@ class TACConfig(BaseModel):
 
         - `CONVERSATION_INTELLIGENCE_CONFIGURATION_ID`: CI Service configuration ID
           for webhook filtering
-        - `CONVERSATION_INTELLIGENCE_OBSERVATION_OPERATOR_SID`: Operator SID for
-          observation extraction
         - `CONVERSATION_INTELLIGENCE_SUMMARY_OPERATOR_SID`: Operator SID for summary
           extraction
         """

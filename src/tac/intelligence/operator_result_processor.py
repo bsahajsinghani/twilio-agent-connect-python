@@ -82,39 +82,6 @@ def _generate_content(operator_result: "OperatorResult") -> str | None:
     return json.dumps(result) if result else None
 
 
-def _parse_observations_content(json_content: str) -> list[str]:
-    """
-    Parse JSON content to extract individual observation contents.
-
-    Expected format: {"observations": [{"content": "..."}, {"content": "..."}]}
-    Fallback: Treat raw content as single observation
-
-    Args:
-        json_content: The JSON content string
-
-    Returns:
-        List of observation content strings
-    """
-    try:
-        payload = json.loads(json_content)
-        if isinstance(payload, dict) and "observations" in payload:
-            observations = payload["observations"]
-            if isinstance(observations, list):
-                contents = []
-                for obs in observations:
-                    if isinstance(obs, dict) and obs.get("content"):
-                        contents.append(str(obs["content"]))
-                if contents:
-                    return contents
-    except (json.JSONDecodeError, TypeError):
-        # If parsing fails or the structure is unexpected, fall back to treating
-        # the entire input as a single summary in the return statement below.
-        pass
-
-    # Fallback: treat entire content as single observation
-    return [json_content] if json_content else []
-
-
 def _parse_summaries_content(json_content: str) -> list[str]:
     """
     Parse JSON content to extract individual summary contents.
@@ -161,11 +128,11 @@ class OperatorResultProcessor:
     """Processor for Conversation Intelligence webhook events.
 
     This processor handles incoming CI webhook payloads, validates them,
-    and creates observations or summaries in Conversation Memory based on the event type.
+    and creates conversation summaries in Conversation Memory based on the event type.
 
     Events are filtered by:
     - Configuration ID matching the provided config
-    - Operator SID matching observation or summary operator SID in config
+    - Operator SID matching the summary operator SID in config
 
     Example usage:
         ```python
@@ -176,16 +143,15 @@ class OperatorResultProcessor:
         conversation_memory_client = MemoryClient(...)
         config = ConversationIntelligenceConfig(
             configuration_id="GA...",
-            observation_operator_sid="LY...",
             summary_operator_sid="LY...",
         )
         processor = OperatorResultProcessor(conversation_memory_client, config)
 
         result = await processor.process_event(webhook_payload)
-        if result.success:
-            print(f"Created {result.created_count} {result.event_type}(s)")
-        elif result.skipped:
+        if result.skipped:
             print(f"Skipped: {result.skip_reason}")
+        elif result.success:
+            print(f"Created {result.created_count} {result.event_type}(s)")
         else:
             print(f"Error: {result.error}")
         ```
@@ -200,7 +166,7 @@ class OperatorResultProcessor:
         Initialize the CI event processor.
 
         Args:
-            conversation_memory_client: MemoryClient instance for creating observations/summaries
+            conversation_memory_client: MemoryClient instance for creating summaries
             config: ConversationIntelligenceConfig for filtering events by configuration
                 ID and operator SIDs
         """
@@ -216,8 +182,9 @@ class OperatorResultProcessor:
         1. Parses the payload into an OperatorResultEvent (Pydantic validates required fields)
         2. Applies filtering logic based on intelligence configuration ID and operator SIDs
         3. Iterates over operator_results array
-        4. For each operator result: extracts profile IDs, generates content
-        5. Creates observations or summaries in Conversation Memory
+        4. For each operator result: filters by operator SID, then generates
+           content and extracts profile IDs
+        5. Creates conversation summaries in Conversation Memory
 
         Args:
             payload: The raw webhook payload dictionary
@@ -316,54 +283,23 @@ class OperatorResultProcessor:
         Returns:
             OperatorProcessingResult with status and count
         """
-        # Extract profile IDs from this operator result
-        profile_ids = _extract_profile_ids(operator_result)
-        if not profile_ids:
-            error_msg = f"No profile IDs found in operator result {operator_result.id}"
-            self.logger.error(error_msg)
-            return OperatorProcessingResult(
-                success=False,
-                error=error_msg,
-            )
-
-        # Generate content from result
-        content = _generate_content(operator_result)
-        if not content:
-            error_msg = f"Failed to generate content from operator result {operator_result.id}"
-            self.logger.error(error_msg)
-            return OperatorProcessingResult(
-                success=False,
-                error=error_msg,
-            )
-
-        # Determine event type by operator SID and process
+        # Filter by operator SID first so unrelated operators are skipped rather
+        # than failing the whole event.
         operator_id = operator_result.operator.id if operator_result.operator else None
 
-        # Check if operator matches configured SIDs
-        if (
-            self.config.observation_operator_sid
-            and operator_id == self.config.observation_operator_sid
-        ):
-            # Process as observation (SID match)
-            return await self._process_observation_event(
-                event=event,
-                operator_result=operator_result,
-                content=content,
-                profile_ids=profile_ids,
+        if self.config.summary_operator_sid is None:
+            # No summary operator configured - nothing to process
+            self.logger.debug("Skipping operator - summary operator SID not configured")
+            return OperatorProcessingResult(
+                success=True,
+                skipped=True,
+                skip_reason="Summary operator SID not configured",
             )
-        elif self.config.summary_operator_sid and operator_id == self.config.summary_operator_sid:
-            # Process as summary (SID match)
-            return await self._process_summary_event(
-                event=event,
-                operator_result=operator_result,
-                content=content,
-                profile_ids=profile_ids,
-            )
-        else:
-            # SIDs are configured but don't match - skip
+
+        if operator_id != self.config.summary_operator_sid:
+            # Configured summary SID doesn't match this operator - skip
             self.logger.debug(
                 f"Skipping operator - SID {operator_id} doesn't match "
-                f"observation ({self.config.observation_operator_sid}) or "
                 f"summary ({self.config.summary_operator_sid})"
             )
             return OperatorProcessingResult(
@@ -372,71 +308,31 @@ class OperatorResultProcessor:
                 skip_reason="Operator SID mismatch",
             )
 
-    async def _process_observation_event(
-        self,
-        event: OperatorResultEvent,
-        operator_result: "OperatorResult",
-        content: str,
-        profile_ids: list[str],
-    ) -> OperatorProcessingResult:
-        """
-        Process an observation event by creating observations in Conversation Memory.
-
-        Args:
-            event: The parent webhook event (for conversation_id)
-            operator_result: The individual operator result
-            content: The generated content string
-            profile_ids: List of profile IDs to create observations for
-
-        Returns:
-            OperatorProcessingResult with status and count
-        """
-        # Parse observations from content
-        observation_contents = _parse_observations_content(content)
-
-        if not observation_contents:
-            self.logger.info(f"No observations to create from operator result {operator_result.id}")
+        # Generate content from result
+        content = _generate_content(operator_result)
+        if not content:
+            self.logger.info(f"Skipping operator result {operator_result.id} with empty content")
             return OperatorProcessingResult(
                 success=True,
-                event_type="observation",
                 skipped=True,
-                skip_reason="No observation content found",
+                skip_reason="Operator result has empty content",
             )
 
-        created_count = 0
-        errors: list[str] = []
-
-        # Create observations for each profile
-        for profile_id in profile_ids:
-            for obs_content in observation_contents:
-                try:
-                    await self.conversation_memory_client.create_observation(
-                        profile_id=profile_id,
-                        content=obs_content,
-                        source="conversation-intelligence",
-                        conversation_ids=[event.conversation_id],
-                        occurred_at=operator_result.date_created,
-                    )
-                    created_count += 1
-                except Exception as e:
-                    error_msg = f"Failed to create observation for profile {profile_id}: {e}"
-                    self.logger.error(error_msg)
-                    errors.append(error_msg)
-
-        if created_count == 0 and errors:
+        # Extract profile IDs from this operator result
+        profile_ids = _extract_profile_ids(operator_result)
+        if not profile_ids:
+            self.logger.info(f"No profile IDs found in operator result {operator_result.id}")
             return OperatorProcessingResult(
-                success=False,
-                event_type="observation",
-                error="; ".join(errors),
+                success=True,
+                skipped=True,
+                skip_reason="No profile IDs found in operator result execution details",
             )
 
-        self.logger.info(
-            f"Created {created_count} observation(s) from operator result {operator_result.id}"
-        )
-        return OperatorProcessingResult(
-            success=True,
-            event_type="observation",
-            created_count=created_count,
+        return await self._process_summary_event(
+            event=event,
+            operator_result=operator_result,
+            content=content,
+            profile_ids=profile_ids,
         )
 
     async def _process_summary_event(

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 import httpx
@@ -350,12 +351,16 @@ class MemoryClient(BaseAPIClient):
         """
         Create a new observation in Conversation Memory.
 
+        The Observations endpoint is a batch-create API, so the observation is
+        wrapped in an ``observations`` array.
+
         Args:
             profile_id: Profile ID to associate observation with
-            content: Observation content (the summary text or extracted fact)
+            content: Observation content (an extracted fact or note about the profile)
             source: Source system identifier (default: "conversation-intelligence")
             conversation_ids: List of conversation IDs this observation relates to
-            occurred_at: Optional timestamp when observation occurred (ISO 8601 format)
+            occurred_at: Timestamp when observation occurred (ISO 8601 format).
+                Defaults to the current time when omitted or blank.
 
         Returns:
             Dict with created observation details
@@ -366,14 +371,17 @@ class MemoryClient(BaseAPIClient):
         endpoint = f"/v1/Stores/{self.store_id}/Profiles/{profile_id}/Observations"
         url = f"{self.base_url}{endpoint}"
 
-        payload: dict[str, Any] = {
+        observation: dict[str, Any] = {
             "content": content,
             "source": source,
         }
         if conversation_ids:
-            payload["conversationIds"] = conversation_ids
-        if occurred_at:
-            payload["occurredAt"] = occurred_at
+            observation["conversationIds"] = conversation_ids
+        if occurred_at is None or not occurred_at.strip():
+            occurred_at = datetime.now(timezone.utc).isoformat()
+        observation["occurredAt"] = occurred_at
+
+        payload: dict[str, Any] = {"observations": [observation]}
 
         try:
             async with self._get_client() as client:
