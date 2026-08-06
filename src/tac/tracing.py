@@ -300,6 +300,46 @@ def inject_traceparent(headers: dict[str, str]) -> dict[str, str]:
 
 
 @contextmanager
+def obs_fetch_span(call_sid: str, profile_id: str, limit: int) -> Iterator[Any]:
+    """Child span wrapping the List Observations API fetch at call start.
+
+    Covers the full paginated fetch of a user's observations via list_observations().
+    Runs once per call. Duration reflects how long it takes to load the memory block
+    that will be injected into every LLM prompt for this call.
+
+    Attributes: call.sid, profile.id, observations.limit
+    Event: observations.count added after fetch completes via record_obs_fetch_count().
+    """
+    from opentelemetry import context, trace
+
+    root_span = _call_spans.get(call_sid)
+    ctx = trace.set_span_in_context(root_span) if root_span is not None else context.get_current()
+    tracer = _get_tracer()
+    with tracer.start_as_current_span(
+        "call.obs_fetch",
+        context=ctx,
+        attributes={
+            "call.sid": call_sid,
+            "profile.id": profile_id,
+            "observations.limit": limit,
+        },
+    ) as span:
+        yield span
+
+
+def record_obs_fetch_count(call_sid: str, count: int) -> None:
+    """Add an observations.count event to the active obs_fetch span.
+
+    Call this immediately after list_observations() returns so the span
+    shows how many observations were actually loaded.
+    """
+    from opentelemetry import trace
+
+    span = trace.get_current_span()
+    span.add_event("observations.fetched", {"call.sid": call_sid, "observations.count": count})
+
+
+@contextmanager
 def first_prompt_wait_span(call_sid: str) -> Iterator[Any]:
     """Child span wrapping the await of init_task on the first prompt.
 

@@ -113,6 +113,13 @@ class TestSpansAreNoopsWhenDisabled:
         with tracing.llm_response_stream_span("CAnoop"):
             pass
 
+    def test_obs_fetch_span_noop(self) -> None:
+        with tracing.obs_fetch_span("CAnoop", profile_id="PF123", limit=500):
+            pass
+
+    def test_record_obs_fetch_count_noop(self) -> None:
+        tracing.record_obs_fetch_count("CAnoop", 247)  # should not raise
+
     def test_first_prompt_wait_span_noop(self) -> None:
         with tracing.first_prompt_wait_span("CAnoop"):
             pass

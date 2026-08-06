@@ -289,10 +289,17 @@ class TAC:
                     return TACMemoryResponse([])
 
             cfg = self.config.memory_config
-            memory_response = await self.conversation_memory_client.list_observations(
+            limit = cfg.observations_limit or 500
+            with tracing.obs_fetch_span(
+                call_sid,
                 profile_id=conversation_context.profile_id,
-                limit=cfg.observations_limit or 500,
-            )
+                limit=limit,
+            ):
+                memory_response = await self.conversation_memory_client.list_observations(
+                    profile_id=conversation_context.profile_id,
+                    limit=limit,
+                )
+            tracing.record_obs_fetch_count(call_sid, len(memory_response.observations or []))
             return TACMemoryResponse(memory_response)
 
         except Exception as e:
