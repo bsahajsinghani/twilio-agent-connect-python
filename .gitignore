@@ -165,3 +165,12 @@ getting_started/examples/partners/.strands_sessions/
 
 # Local Makefile overrides
 Makefile.local
+
+# Local experiment scripts (not for upstream)
+getting_started/examples/features/voice_streaming_local.py
+getting_started/examples/features/voice_streaming_sagemaker.py
+getting_started/examples/features/voice_streaming_parallel_init.py
+getting_started/examples/features/voice_streaming_prefetch.py
+getting_started/examples/features/voice_streaming_early_coinit.py
+getting_started/examples/features/voice_streaming_list_obs.py
+getting_started/examples/features/trace.json
