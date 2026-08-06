@@ -351,6 +351,8 @@ class VoiceChannel(BaseChannel):
             if conv_id:
                 self.logger.debug("Cleanup - removing WebSocket", conversation_id=conv_id)
                 await self._cleanup_connection(conv_id)
+            elif call_sid:
+                tracing.end_call(call_sid)
 
     async def initiate_outbound_conversation(
         self,
@@ -833,7 +835,9 @@ class VoiceChannel(BaseChannel):
         elif conv_id in self._conversations:
             await self._end_conversation(conv_id)
 
-        tracing.end_call(conv_id)
+        session = self._conversations.get(conv_id)
+        call_sid = session.metadata.get("call_sid", conv_id) if session else conv_id
+        tracing.end_call(call_sid)
 
         self.logger.debug(
             "Cleaned up WebSocket and session resources",
