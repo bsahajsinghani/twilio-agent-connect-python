@@ -280,7 +280,9 @@ class VoiceChannel(BaseChannel):
         self.logger.debug("WebSocket connection established")
 
         conv_id: str | None = None
+        call_sid: str | None = None
         session_state = None
+        init_task: asyncio.Task[tuple[str, SessionState | None]] | None = None
 
         try:
             # First message should be 'setup'
@@ -290,10 +292,14 @@ class VoiceChannel(BaseChannel):
                 call_sid = setup_msg.call_sid
 
                 self.logger.info("Call started", call_sid=call_sid)
-                tracing.start_call(call_sid)
+                if call_sid:
+                    tracing.start_call(call_sid)
 
-                # Don't initialize conversation yet - wait for first prompt
-                # when ConversationRelay has created the conversation
+                # Fire init immediately so CO polling runs during user speech
+                if call_sid and self.tac.is_orchestrator_enabled():
+                    init_task = asyncio.create_task(
+                        self._initialize_conversation(call_sid, setup_msg, websocket)
+                    )
 
                 # Process all subsequent messages
                 while True:
@@ -303,9 +309,9 @@ class VoiceChannel(BaseChannel):
                     if msg_type == "prompt":
                         if not conv_id and call_sid:
                             if self.tac.is_orchestrator_enabled():
-                                conv_id, session_state = await self._initialize_conversation(
-                                    call_sid, setup_msg, websocket
-                                )
+                                with tracing.first_prompt_wait_span(call_sid):
+                                    conv_id, session_state = await init_task  # type: ignore[misc]
+                                init_task = None
                             else:
                                 conv_id = call_sid
                                 self._websocket_manager.add_websocket(conv_id, websocket)
@@ -348,6 +354,26 @@ class VoiceChannel(BaseChannel):
         except Exception as e:
             self.logger.error(f"WebSocket error: {str(e)}")
         finally:
+            if init_task is not None:
+                if not init_task.done():
+                    init_task.cancel()
+                try:
+                    await init_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    self.logger.warning(
+                        "Early co_init task failed",
+                        call_sid=call_sid,
+                        error=str(e),
+                    )
+                if not conv_id and not init_task.cancelled():
+                    try:
+                        resolved_conv_id, _ = init_task.result()
+                        self._websocket_manager.remove_websocket(resolved_conv_id)
+                    except Exception:
+                        pass
+
             if conv_id:
                 self.logger.debug("Cleanup - removing WebSocket", conversation_id=conv_id)
                 await self._cleanup_connection(conv_id)
@@ -447,9 +473,7 @@ class VoiceChannel(BaseChannel):
             )
 
             if should_process:
-                self._stt_processed_counts[conv_id] = (
-                    self._stt_processed_counts.get(conv_id, 0) + 1
-                )
+                self._stt_processed_counts[conv_id] = self._stt_processed_counts.get(conv_id, 0) + 1
                 total_chunks = self._stt_chunk_counts.get(conv_id, 0)
                 total_processed = self._stt_processed_counts[conv_id]
                 self.logger.debug(
@@ -823,9 +847,7 @@ class VoiceChannel(BaseChannel):
             if co_client is not None and conv_id in self._conversations:
                 try:
                     await co_client.update_conversation(conv_id, status="CLOSED")
-                    self.logger.debug(
-                        "Closed conversation on call end", conversation_id=conv_id
-                    )
+                    self.logger.debug("Closed conversation on call end", conversation_id=conv_id)
                 except Exception as e:
                     self.logger.warning(
                         "Failed to close conversation on call end",

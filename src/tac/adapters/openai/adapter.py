@@ -5,10 +5,10 @@ from __future__ import annotations
 import copy
 from typing import TYPE_CHECKING, Any, overload
 
+from tac import tracing
 from tac.adapters.options import AdapterOptions
 from tac.adapters.prompt_builder import MemoryPromptBuilder
 from tac.core.logging import get_logger
-from tac import tracing
 from tac.models.session import ConversationSession
 from tac.models.tac import TACMemoryResponse
 

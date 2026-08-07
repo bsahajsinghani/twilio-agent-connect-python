@@ -47,6 +47,7 @@ def setup_tracing() -> None:
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
     except ImportError:
         import logging
+
         logging.getLogger(__name__).warning(
             "OTEL_ENABLED=true but opentelemetry packages are not installed. "
             "Run: pip install tac[tracing]"

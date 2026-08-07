@@ -1606,3 +1606,74 @@ class TestSessionManagerDefaults:
         # Verify task was cancelled
         assert task_cancelled == [True]
         assert session_state.stream_task.done()
+
+    @pytest.mark.asyncio
+    async def test_early_coinit_task_cancelled_on_early_hangup(self) -> None:
+        """Test that init_task is cancelled when user hangs up before first prompt."""
+        from tac.channels.websocket_protocol import WebSocketDisconnectError
+
+        tac = TAC(get_test_config())
+        channel = VoiceChannel(tac)
+
+        init_cancelled = []
+
+        async def slow_init(call_sid, setup_msg, websocket):
+            try:
+                await asyncio.sleep(10.0)
+                return ("CONV_NEVER", None)
+            except asyncio.CancelledError:
+                init_cancelled.append(True)
+                raise
+
+        with patch.object(channel, "_initialize_conversation", side_effect=slow_init):
+            with patch.object(channel.tac, "is_orchestrator_enabled", return_value=True):
+                mock_websocket = AsyncMock()
+                setup_data = {"type": "setup", "callSid": "CA_early_hangup"}
+                call_count = 0
+
+                async def receive_json_hangup():
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count == 1:
+                        return setup_data
+                    await asyncio.sleep(0)  # yield so init_task starts
+                    raise WebSocketDisconnectError()
+
+                mock_websocket.receive_json = receive_json_hangup
+
+                await channel.handle_websocket(mock_websocket)
+
+        assert init_cancelled == [True]
+
+    @pytest.mark.asyncio
+    async def test_early_coinit_task_failure_is_logged(self) -> None:
+        """Test that a failing init_task logs a warning instead of crashing."""
+        from tac.channels.websocket_protocol import WebSocketDisconnectError
+
+        tac = TAC(get_test_config())
+        channel = VoiceChannel(tac)
+        channel.logger = MagicMock()
+
+        async def failing_init(call_sid, setup_msg, websocket):
+            raise RuntimeError("CO unreachable")
+
+        with patch.object(channel, "_initialize_conversation", side_effect=failing_init):
+            with patch.object(channel.tac, "is_orchestrator_enabled", return_value=True):
+                mock_websocket = AsyncMock()
+                setup_data = {"type": "setup", "callSid": "CA_failing_init"}
+                call_count = 0
+
+                async def receive_json_fail():
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count == 1:
+                        return setup_data
+                    await asyncio.sleep(0)
+                    raise WebSocketDisconnectError()
+
+                mock_websocket.receive_json = receive_json_fail
+
+                await channel.handle_websocket(mock_websocket)
+
+        warning_calls = [str(c) for c in channel.logger.warning.call_args_list]
+        assert any("Early co_init" in w or "early co_init" in w for w in warning_calls)
